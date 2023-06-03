@@ -4,7 +4,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config()
-
+const stripe = require('stripe')(process.env.PAYMENT_SECRET_KEY)
 const port = process.env.PORT || 5000;
 
 
@@ -31,9 +31,10 @@ const verifyJWT = (req, res, next) => {
 }
 
 
-// const uri = 'mongodb://0.0.0.0:27017' 
+const uri = 'mongodb://0.0.0.0:27017' 
 
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.bduz0qc.mongodb.net/?retryWrites=true&w=majority`;
+
+// const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.bduz0qc.mongodb.net/?retryWrites=true&w=majority`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
@@ -54,6 +55,7 @@ async function run() {
     const menuCollection = client.db("bistroDb").collection("menu");
     const reviewCollection = client.db("bistroDb").collection("reviews");
     const cartCollection = client.db("bistroDb").collection("carts");
+    const paymentCollection = client.db("bistroDb").collection("payments");
 
 
     app.post('/jwt' ,(req, res) =>{
@@ -131,13 +133,25 @@ async function run() {
         res.send(result);
       })
 
-     
-
     // menu related apis
     app.get('/menu', async(req, res) =>{
         const result = await menuCollection.find().toArray();
         res.send(result)
     } )
+
+    app.post('/menu',verifyJWT,verifyAdmin, async(req, res) =>{
+      const newItem = req.body;
+      const result = await menuCollection.insertOne(newItem);
+      res.send(result);
+    })
+
+    app.delete('/menu/:id',verifyJWT, verifyAdmin, async(req, res)=>{
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)}
+      const result = await menuCollection.deleteOne(query);
+      res.send(result);
+
+    })
    
     // review related apis
     app.get('/reviews', async(req, res) =>{
@@ -179,9 +193,58 @@ async function run() {
     const result = await cartCollection.deleteOne(query);
     res.send(result);
    })
+ 
+
+  //  create payment intent
+  app.post('/create-payment-intent',verifyJWT, async(req, res) =>{
+    const {price} = req.body;
+    const amount = price*100;
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount:amount,
+      currency: 'usd',
+      payment_method_types: ['card'],
+    })
+
+    res.send({
+      clientSecret: paymentIntent.client_secret
+    })
+  })
+
+  // payment related api 
+
+  app.post('/payments', verifyJWT, async(req, res) =>{
+    const payment = req.body;
+    const insertResult = await paymentCollection.insertOne(payment);
+
+  
+    const query = { _id: { $in: payment.cartItems.map(id => new ObjectId(id)) } }
+
+  const deleteResult = await cartCollection.deleteMany(query)
+    res.send({ insertResult, deleteResult});
+  })
+
+
+  app.get('/admin-status',verifyJWT, verifyAdmin, async(req,res) =>{
+    const users = await usersCollection.estimatedDocumentCount();
+    const products = await menuCollection.estimatedDocumentCount();
+    const orders = await paymentCollection.estimatedDocumentCount();
+
+    // best way to get sum of a field is to use group and sum operation
+
+    // Bangle system
+
+    const payments = await paymentCollection.find().toArray();
+    const revenue = payments.reduce( ( sum, payment) => sum + payment.price, 0) 
 
 
 
+    res.send({
+      users,
+      products,
+      orders,
+      revenue
+    })
+  })
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
